@@ -184,6 +184,14 @@ EOF
   ```
   The same fallback covers shared mailboxes and other Send-As addresses that
   aren't directly addressable as a user.
+
+  To grant the permission across **all** Microsoft 365 Groups at once, use the
+  included `Grant-GroupSendPermissions.ps1` (Exchange Online PowerShell):
+  ```powershell
+  ./Grant-GroupSendPermissions.ps1 -Trustee noreply@domain.com -WhatIf   # preview
+  ./Grant-GroupSendPermissions.ps1 -Trustee noreply@domain.com           # SendOnBehalf
+  ./Grant-GroupSendPermissions.ps1 -Trustee noreply@domain.com -AccessRight SendAs
+  ```
 - Recipients come from the SMTP envelope (`RCPT TO`); the relay falls back to
   the `To`/`Cc` headers only if the envelope has none.
 - Plain-text, HTML, and file attachments are supported. The relay does not do
