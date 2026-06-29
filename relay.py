@@ -77,14 +77,24 @@ class GraphMailer:
             )
         return result["access_token"]
 
-    def send(self, sender: str, recipients: list[str], raw: bytes) -> None:
+    def send(
+        self,
+        sender: str,
+        recipients: list[str],
+        raw: bytes,
+        from_name: str = "",
+    ) -> None:
         parsed = message_from_bytes(raw)
         subject = parsed.get("Subject", "")
         body, content_type, attachments = _extract_body(parsed)
 
+        from_address = {"address": sender}
+        if from_name:
+            from_address["name"] = from_name
         message = {
             "subject": subject,
             "body": {"contentType": content_type, "content": body},
+            "from": {"emailAddress": from_address},
             "toRecipients": [
                 {"emailAddress": {"address": addr}} for addr in recipients
             ],
@@ -179,9 +189,13 @@ class RelayHandler:
 
         cc = [addr for _, addr in getaddresses(parsed.get_all("Cc", [])) if addr]
         subject = parsed.get("Subject", "")
-        # Header From / envelope MAIL FROM are logged for visibility, but the
-        # message is always *sent* from SendFrom (a Graph constraint).
         from_header = parsed.get("From", "")
+
+        # Send as the message's From address when present, then the envelope
+        # MAIL FROM, and finally fall back to the configured SendFrom mailbox.
+        from_pairs = getaddresses(parsed.get_all("From", []))
+        from_name, from_addr = from_pairs[0] if from_pairs else ("", "")
+        sender = from_addr or envelope.mail_from or self.cfg.send_from
 
         self._log_event(
             peer_ip=peer_ip,
@@ -197,17 +211,18 @@ class RelayHandler:
             events.warning("REJECTED ip=%s reason=no-recipients", peer_ip)
             return "550 No recipients"
 
-        sender = self.cfg.send_from
         log.info("Relaying message from %s to %s", sender, ", ".join(recipients))
         try:
             await asyncio.to_thread(
-                self.mailer.send, sender, recipients, envelope.content
+                self.mailer.send, sender, recipients, envelope.content, from_name
             )
         except Exception as exc:  # noqa: BLE001 - report any failure back to client
             log.error("Failed to relay message: %s", exc)
             events.error("FAILED ip=%s to=%s error=%s", peer_ip, ",".join(recipients), exc)
             return f"451 Relay failed: {exc}"
-        events.info("SENT ip=%s to=%s", peer_ip, ",".join(recipients))
+        events.info(
+            "SENT ip=%s from=%s to=%s", peer_ip, sender, ",".join(recipients)
+        )
         return "250 Message accepted for delivery"
 
     @staticmethod

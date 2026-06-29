@@ -147,8 +147,13 @@ EOF
 
 ## Notes & limitations
 
-- Mail is always sent **from `SendFrom`** regardless of the SMTP `MAIL FROM` /
-  `From:` header (Graph sends from the mailbox in the API path).
+- Mail is sent **from the message's `From:` address** when present, falling
+  back to the SMTP `MAIL FROM` and finally to the configured `SendFrom`
+  mailbox. The sending app registration must have permission to send as that
+  address — with `Mail.Send` scoped by an
+  [application access policy](https://learn.microsoft.com/en-us/graph/auth-limit-mailbox-access),
+  only allowed mailboxes will succeed; others get rejected by Graph. Use
+  `SendFrom` as the safe default for apps that don't set a `From:`.
 - Recipients come from the SMTP envelope (`RCPT TO`); the relay falls back to
   the `To`/`Cc` headers only if the envelope has none.
 - Plain-text, HTML, and file attachments are supported. The relay does not do
