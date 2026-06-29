@@ -25,26 +25,60 @@ message body/attachments, and calls
 
 ## Environment variables
 
-| Variable              | Required | Default     | Description                                            |
-| --------------------- | -------- | ----------- | ------------------------------------------------------ |
-| `Graph_TenantId`      | yes      | —           | Entra ID (Azure AD) tenant ID.                         |
-| `Graph_ClientId`      | yes      | —           | App registration (client) ID.                          |
-| `Graph__ClientSecret` | yes      | —           | App registration client secret.                        |
-| `SendFrom`            | yes      | —           | Mailbox/UPN that mail is sent from (e.g. `noreply@…`). |
-| `LogLevel`            | no       | `INFO`      | Python log level: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
-| `Smtp_Host`           | no       | `0.0.0.0`   | Address the SMTP server binds to.                      |
-| `Smtp_Port`           | no       | `25`        | Port the SMTP server listens on.                       |
+| Variable             | Required | Default   | Description                                                   |
+| -------------------- | -------- | --------- | ------------------------------------------------------------ |
+| `Graph_TenantId`     | yes      | —         | Entra ID (Azure AD) tenant ID.                               |
+| `Graph_ClientId`     | yes      | —         | App registration (client) ID.                                |
+| `Graph_ClientSecret` | yes      | —         | App registration client secret.                              |
+| `SendFrom`           | yes      | —         | Mailbox/UPN that mail is sent from (e.g. `noreply@…`).       |
+| `LogLevel`           | no       | `INFO`    | Python log level: `DEBUG`, `INFO`, `WARNING`, `ERROR`.       |
+| `LogPath`            | no       | —         | File or directory for a persistent event log (see below).    |
+| `Smtp_Host`          | no       | `0.0.0.0` | Address the SMTP server binds to.                            |
+| `Smtp_Port`          | no       | `25`      | Port the SMTP server listens on.                             |
 
 Both single- and double-underscore spellings are accepted for the Graph and
 SMTP variables (e.g. `Graph_ClientSecret` and `Graph__ClientSecret`,
 `Smtp_Port` and `Smtp__Port`), so you can match whatever convention you already
 use.
 
+## Logging
+
+Logs always go to stdout (visible via `docker logs`). If you set `LogPath`,
+the relay **also** writes to a rotating file (10 MB × 5 backups). Point it at a
+directory (a `relay.log` file is created inside) or a specific file path, and
+mount a volume there for persistence:
+
+```yaml
+environment:
+  LogPath: "/var/log/smtp-relay"
+volumes:
+  - ./logs:/var/log/smtp-relay
+```
+
+Each received message produces a structured event line:
+
+```
+2026-06-29 12:00:00 INFO smtp-relay.events: RECEIVED ip=172.18.0.5 mail_from=app@example.com from='App <app@example.com>' to=alice@example.com,bob@example.com cc=carol@example.com subject='Nightly report' size=2048
+2026-06-29 12:00:01 INFO smtp-relay.events: SENT ip=172.18.0.5 to=alice@example.com,bob@example.com
+```
+
+`RECEIVED` is logged for every message with the peer IP, envelope `MAIL FROM`,
+the `From`/`To`/`Cc` headers, subject, and size; `SENT`, `FAILED`, or
+`REJECTED` records the outcome.
+
+## Health check
+
+The image ships with a Docker `HEALTHCHECK` that opens an SMTP session against
+the listener every 30s and verifies the greeting. If the relay locks up, the
+container is marked `unhealthy` so your orchestrator (or
+`restart: unless-stopped` plus a watchdog) can restart it. Check status with
+`docker inspect --format '{{.State.Health.Status}}' smtp-relay`.
+
 ## Azure / Entra ID setup
 
 1. Register an application in **Entra ID → App registrations**.
 2. Under **Certificates & secrets**, create a **client secret** → use it as
-   `Graph__ClientSecret`.
+   `Graph_ClientSecret`.
 3. Under **API permissions**, add the **Application** permission
    `Mail.Send` (Microsoft Graph) and grant admin consent.
 4. (Recommended) Scope the app to a single mailbox with an
@@ -85,8 +119,10 @@ docker build -t microsoft-365-smtp-relay .
 docker run -d --name smtp-relay \
   -e Graph_TenantId=... \
   -e Graph_ClientId=... \
-  -e Graph__ClientSecret=... \
+  -e Graph_ClientSecret=... \
   -e SendFrom=noreply@yourdomain.com \
+  -e LogPath=/var/log/smtp-relay \
+  -v "$PWD/logs:/var/log/smtp-relay" \
   -p 2525:25 \
   microsoft-365-smtp-relay
 ```

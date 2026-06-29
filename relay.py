@@ -15,6 +15,7 @@ import signal
 import sys
 from email import message_from_bytes
 from email.utils import getaddresses
+from logging.handlers import RotatingFileHandler
 
 import msal
 import requests
@@ -24,6 +25,7 @@ GRAPH_SCOPE = ["https://graph.microsoft.com/.default"]
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 log = logging.getLogger("smtp-relay")
+events = logging.getLogger("smtp-relay.events")
 
 
 def env(*names, default=None, required=False):
@@ -50,6 +52,7 @@ class Config:
         )
         self.send_from = env("SendFrom", required=True)
         self.log_level = env("LogLevel", default="INFO").upper()
+        self.log_path = env("LogPath", "LogFile")
         self.smtp_host = env("Smtp_Host", "Smtp__Host", default="0.0.0.0")
         self.smtp_port = int(env("Smtp_Port", "Smtp__Port", default="25"))
 
@@ -159,11 +162,13 @@ class RelayHandler:
         self.cfg = cfg
 
     async def handle_DATA(self, server, session, envelope):
+        parsed = message_from_bytes(envelope.content)
+        peer_ip = session.peer[0] if session.peer else "unknown"
+
         recipients = list(envelope.rcpt_tos)
         # Fall back to recipients found in the message headers if the envelope
         # somehow has none.
         if not recipients:
-            parsed = message_from_bytes(envelope.content)
             recipients = [
                 addr
                 for _, addr in getaddresses(
@@ -171,7 +176,25 @@ class RelayHandler:
                 )
                 if addr
             ]
+
+        cc = [addr for _, addr in getaddresses(parsed.get_all("Cc", [])) if addr]
+        subject = parsed.get("Subject", "")
+        # Header From / envelope MAIL FROM are logged for visibility, but the
+        # message is always *sent* from SendFrom (a Graph constraint).
+        from_header = parsed.get("From", "")
+
+        self._log_event(
+            peer_ip=peer_ip,
+            mail_from=envelope.mail_from or "",
+            from_header=from_header,
+            recipients=recipients,
+            cc=cc,
+            subject=subject,
+            size=len(envelope.content),
+        )
+
         if not recipients:
+            events.warning("REJECTED ip=%s reason=no-recipients", peer_ip)
             return "550 No recipients"
 
         sender = self.cfg.send_from
@@ -182,16 +205,58 @@ class RelayHandler:
             )
         except Exception as exc:  # noqa: BLE001 - report any failure back to client
             log.error("Failed to relay message: %s", exc)
+            events.error("FAILED ip=%s to=%s error=%s", peer_ip, ",".join(recipients), exc)
             return f"451 Relay failed: {exc}"
+        events.info("SENT ip=%s to=%s", peer_ip, ",".join(recipients))
         return "250 Message accepted for delivery"
+
+    @staticmethod
+    def _log_event(*, peer_ip, mail_from, from_header, recipients, cc, subject, size):
+        events.info(
+            "RECEIVED ip=%s mail_from=%s from=%r to=%s cc=%s subject=%r size=%d",
+            peer_ip,
+            mail_from or "-",
+            from_header or "-",
+            ",".join(recipients) or "-",
+            ",".join(cc) or "-",
+            subject or "-",
+            size,
+        )
+
+
+def setup_logging(cfg: Config):
+    level = getattr(logging, cfg.log_level, logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # aiosmtpd's internal logger is very chatty at INFO; keep its protocol
+    # noise out of our logs unless the user explicitly asks for DEBUG.
+    if level > logging.DEBUG:
+        logging.getLogger("mail.log").setLevel(logging.WARNING)
+
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    if cfg.log_path:
+        # If a directory is given, write to relay.log inside it.
+        path = cfg.log_path
+        if os.path.isdir(path) or path.endswith(os.sep):
+            path = os.path.join(path, "relay.log")
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        file_handler = RotatingFileHandler(
+            path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        file_handler.setFormatter(fmt)
+        root.addHandler(file_handler)
+        log.info("Writing logs to %s", path)
 
 
 def main():
     cfg = Config()
-    logging.basicConfig(
-        level=getattr(logging, cfg.log_level, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    setup_logging(cfg)
     log.info(
         "Starting SMTP relay on %s:%s -> Graph sendMail as %s",
         cfg.smtp_host,

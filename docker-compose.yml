@@ -6,11 +6,15 @@ services:
     environment:
       Graph_TenantId: "00000000-0000-0000-0000-000000000000"
       Graph_ClientId: "00000000-0000-0000-0000-000000000000"
-      Graph__ClientSecret: "your-app-client-secret"
+      Graph_ClientSecret: "your-app-client-secret"
       SendFrom: "noreply@yourdomain.com"
       LogLevel: "INFO"
+      LogPath: "/var/log/smtp-relay"   # directory or file for persistent logs
       Smtp_Host: "0.0.0.0"
       Smtp_Port: "25"
+    # Persist the event log on the host.
+    volumes:
+      - ./logs:/var/log/smtp-relay
     # Only publish a host port if you need to reach the relay from outside the
     # Docker network. For container-to-container use, just put them on the same
     # network and point them at "smtp-relay:25".
