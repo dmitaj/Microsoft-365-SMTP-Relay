@@ -111,6 +111,25 @@ Put the relay and your apps on the same Docker network and point them at
 `smtp-relay:25`. No need to publish a host port unless you want to reach it
 from the host.
 
+### Updating / redeploying (Unraid host)
+
+`deploy.sh` updates the local clone, builds the image, pushes it, and recreates
+the running container with the new image — run it on the Docker host:
+
+```bash
+cd /mnt/user/github/Microsoft-365-SMTP-Relay
+./deploy.sh                 # pull, build, push, recreate
+./deploy.sh --no-push       # local build only, then recreate
+./deploy.sh --no-restart    # build + push, leave the container running
+```
+
+It recreates the container by snapshotting its existing `docker run` command
+(via the `runlike` helper) so all your Unraid template settings — env vars,
+the appdata log volume, ports, restart policy — are preserved. Override
+`IMAGE`, `CONTAINER`, `BRANCH`, or `REPO_DIR` as environment variables if your
+names differ. Pushing requires being logged in to the registry
+(`docker login ghcr.io`).
+
 ### Plain Docker
 
 ```bash
