@@ -1,0 +1,18 @@
+services:
+  smtp-relay:
+    build: .
+    # image: ghcr.io/dmitaj/microsoft-365-smtp-relay:latest
+    restart: unless-stopped
+    environment:
+      Graph_TenantId: "00000000-0000-0000-0000-000000000000"
+      Graph_ClientId: "00000000-0000-0000-0000-000000000000"
+      Graph__ClientSecret: "your-app-client-secret"
+      SendFrom: "noreply@yourdomain.com"
+      LogLevel: "INFO"
+      Smtp_Host: "0.0.0.0"
+      Smtp_Port: "25"
+    # Only publish a host port if you need to reach the relay from outside the
+    # Docker network. For container-to-container use, just put them on the same
+    # network and point them at "smtp-relay:25".
+    ports:
+      - "2525:25"
