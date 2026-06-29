@@ -154,6 +154,17 @@ EOF
   [application access policy](https://learn.microsoft.com/en-us/graph/auth-limit-mailbox-access),
   only allowed mailboxes will succeed; others get rejected by Graph. Use
   `SendFrom` as the safe default for apps that don't set a `From:`.
+- **Non-user senders (e.g. Microsoft 365 Groups):** a group address isn't a
+  user mailbox, so Graph rejects a direct send with `404 ErrorInvalidUser`.
+  When that happens, the relay automatically retries through the `SendFrom`
+  mailbox while keeping the original address as the `From:`. For this to
+  succeed, grant `SendFrom` **Send As** rights on the group in Exchange Online:
+  ```powershell
+  $g = Get-Recipient -RecipientTypeDetails GroupMailbox -Identity "<groupAlias>"
+  Add-RecipientPermission -Identity $g.Name -Trustee "<SendFrom mailbox>" -AccessRights SendAs
+  ```
+  The same fallback covers shared mailboxes and other Send-As addresses that
+  aren't directly addressable as a user.
 - Recipients come from the SMTP envelope (`RCPT TO`); the relay falls back to
   the `To`/`Cc` headers only if the envelope has none.
 - Plain-text, HTML, and file attachments are supported. The relay does not do

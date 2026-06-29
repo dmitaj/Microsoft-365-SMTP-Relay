@@ -102,9 +102,32 @@ class GraphMailer:
         if attachments:
             message["attachments"] = attachments
 
-        url = f"{GRAPH_BASE}/users/{sender}/sendMail"
+        status, text = self._post(sender, message)
+        if status in (200, 202):
+            return
+
+        # If the From address isn't a sendable user mailbox (e.g. it's a
+        # Microsoft 365 Group, which Graph rejects with 404 ErrorInvalidUser),
+        # fall back to sending through the configured SendFrom mailbox while
+        # keeping the original From on the message. This requires SendFrom to
+        # have Send As rights on that address.
+        fallback = self.cfg.send_from
+        if _is_invalid_user(status, text) and sender.lower() != fallback.lower():
+            log.warning(
+                "Sender %s is not a user mailbox (%s); retrying via %s",
+                sender,
+                status,
+                fallback,
+            )
+            status, text = self._post(fallback, message)
+            if status in (200, 202):
+                return
+
+        raise RuntimeError(f"Graph sendMail failed ({status}): {text}")
+
+    def _post(self, mailbox: str, message: dict) -> tuple[int, str]:
         resp = requests.post(
-            url,
+            f"{GRAPH_BASE}/users/{mailbox}/sendMail",
             headers={
                 "Authorization": f"Bearer {self._token()}",
                 "Content-Type": "application/json",
@@ -112,10 +135,18 @@ class GraphMailer:
             json={"message": message, "saveToSentItems": False},
             timeout=30,
         )
-        if resp.status_code not in (200, 202):
-            raise RuntimeError(
-                f"Graph sendMail failed ({resp.status_code}): {resp.text}"
-            )
+        return resp.status_code, resp.text
+
+
+def _is_invalid_user(status: int, text: str) -> bool:
+    """True when Graph rejected the sending mailbox as not a valid user.
+
+    This is what comes back when the From address belongs to something that
+    isn't a user mailbox (a Microsoft 365 Group, a contact, a typo, etc.).
+    """
+    return status == 404 and (
+        "ErrorInvalidUser" in text or "ResourceNotFound" in text
+    )
 
 
 def _extract_body(parsed):
