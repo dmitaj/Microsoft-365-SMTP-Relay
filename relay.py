@@ -83,45 +83,63 @@ class GraphMailer:
         recipients: list[str],
         raw: bytes,
         from_name: str = "",
-    ) -> None:
+    ) -> str:
+        """Send the message and return the From address actually used."""
         parsed = message_from_bytes(raw)
         subject = parsed.get("Subject", "")
         body, content_type, attachments = _extract_body(parsed)
 
-        from_address = {"address": sender}
-        if from_name:
-            from_address["name"] = from_name
-        message = {
-            "subject": subject,
-            "body": {"contentType": content_type, "content": body},
-            "from": {"emailAddress": from_address},
-            "toRecipients": [
-                {"emailAddress": {"address": addr}} for addr in recipients
-            ],
-        }
-        if attachments:
-            message["attachments"] = attachments
+        def build(from_addr: str, name: str) -> dict:
+            emailAddress = {"address": from_addr}
+            if name:
+                emailAddress["name"] = name
+            msg = {
+                "subject": subject,
+                "body": {"contentType": content_type, "content": body},
+                "from": {"emailAddress": emailAddress},
+                "toRecipients": [
+                    {"emailAddress": {"address": addr}} for addr in recipients
+                ],
+            }
+            if attachments:
+                msg["attachments"] = attachments
+            return msg
 
-        status, text = self._post(sender, message)
-        if status in (200, 202):
-            return
-
-        # If the From address isn't a sendable user mailbox (e.g. it's a
-        # Microsoft 365 Group, which Graph rejects with 404 ErrorInvalidUser),
-        # fall back to sending through the configured SendFrom mailbox while
-        # keeping the original From on the message. This requires SendFrom to
-        # have Send As rights on that address.
         fallback = self.cfg.send_from
-        if _is_invalid_user(status, text) and sender.lower() != fallback.lower():
+        distinct = sender.lower() != fallback.lower()
+
+        # 1) Send directly as the From address (user mailboxes and aliases).
+        status, text = self._post(sender, build(sender, from_name))
+        if status in (200, 202):
+            return sender
+
+        # 2) The From isn't a user mailbox (e.g. a Microsoft 365 Group, which
+        #    Graph rejects with 404 ErrorInvalidUser): route through SendFrom
+        #    but keep the original From. Requires SendFrom to have Send As /
+        #    Send on Behalf on that address.
+        if distinct and _is_invalid_user(status, text):
             log.warning(
-                "Sender %s is not a user mailbox (%s); retrying via %s",
+                "Sender %s is not a user mailbox (%s); retrying via %s keeping From",
                 sender,
                 status,
                 fallback,
             )
-            status, text = self._post(fallback, message)
+            status, text = self._post(fallback, build(sender, from_name))
             if status in (200, 202):
-                return
+                return sender
+
+        # 3) The From still can't be used (non-existent address, or no Send As
+        #    grant): send plainly as SendFrom so the mail still goes out.
+        if distinct and _is_unusable_sender(status, text):
+            log.warning(
+                "Cannot send as %s (%s); falling back to From=%s",
+                sender,
+                status,
+                fallback,
+            )
+            status, text = self._post(fallback, build(fallback, ""))
+            if status in (200, 202):
+                return fallback
 
         raise RuntimeError(f"Graph sendMail failed ({status}): {text}")
 
@@ -146,6 +164,18 @@ def _is_invalid_user(status: int, text: str) -> bool:
     """
     return status == 404 and (
         "ErrorInvalidUser" in text or "ResourceNotFound" in text
+    )
+
+
+def _is_unusable_sender(status: int, text: str) -> bool:
+    """True when the From address can't be used as a sender at all.
+
+    Covers both "not a user mailbox" (404 ErrorInvalidUser) and "not allowed to
+    send as this address" (403 ErrorSendAsDenied) - e.g. a non-existent From, or
+    a group with no Send As grant. In these cases we send plainly as SendFrom.
+    """
+    return _is_invalid_user(status, text) or (
+        status == 403 and "ErrorSendAsDenied" in text
     )
 
 
@@ -244,7 +274,7 @@ class RelayHandler:
 
         log.info("Relaying message from %s to %s", sender, ", ".join(recipients))
         try:
-            await asyncio.to_thread(
+            sent_from = await asyncio.to_thread(
                 self.mailer.send, sender, recipients, envelope.content, from_name
             )
         except Exception as exc:  # noqa: BLE001 - report any failure back to client
@@ -252,7 +282,7 @@ class RelayHandler:
             events.error("FAILED ip=%s to=%s error=%s", peer_ip, ",".join(recipients), exc)
             return f"451 Relay failed: {exc}"
         events.info(
-            "SENT ip=%s from=%s to=%s", peer_ip, sender, ",".join(recipients)
+            "SENT ip=%s from=%s to=%s", peer_ip, sent_from, ",".join(recipients)
         )
         return "250 Message accepted for delivery"
 

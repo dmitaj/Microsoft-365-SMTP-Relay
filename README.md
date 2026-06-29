@@ -184,6 +184,12 @@ EOF
   ```
   The same fallback covers shared mailboxes and other Send-As addresses that
   aren't directly addressable as a user.
+- **Unusable / non-existent From:** if the From address can't be used as a
+  sender at all — a typo, a deleted mailbox, or a group with no Send As grant
+  (`404 ErrorInvalidUser` or `403 ErrorSendAsDenied`) — the relay makes a final
+  attempt sending plainly as `SendFrom` so the mail still goes out. The `SENT`
+  log line records the address actually used, so a downgrade to `SendFrom` is
+  visible there and in the preceding `WARNING`.
 
   To grant the permission across **all** Microsoft 365 Groups at once, use the
   included `Grant-GroupSendPermissions.ps1` (Exchange Online PowerShell):
